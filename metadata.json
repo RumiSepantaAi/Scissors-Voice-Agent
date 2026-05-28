@@ -1,0 +1,10 @@
+{
+  "name": "Scissors Voice Agent",
+  "description": "Ein KI-gesteuerter Telefonempfang für den Friseursalon Scissors.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
