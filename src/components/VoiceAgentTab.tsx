@@ -29,6 +29,15 @@ export default function VoiceAgentTab({ store }: { store: ReturnType<typeof useS
     }
   }, []);
 
+  useEffect(() => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: "sync_appointments",
+        appointments
+      }));
+    }
+  }, [appointments]);
+
   const playAudioChunk = (ctx: AudioContext, base64: string) => {
     const f32 = base64ToPcm(base64);
     const buffer = ctx.createBuffer(1, f32.length, 24000); // Live output is 24kHz
@@ -60,11 +69,7 @@ export default function VoiceAgentTab({ store }: { store: ReturnType<typeof useS
         streamRef.current = stream;
       } catch (err: any) {
         console.warn("Microphone access denied or blocked in iframe. Please use new tab.", err);
-        setMessages(p => [...p, { role: 'agent', text: `[Fehler] Mikrofon konnte nicht aktiviert werden. Das passiert oft innerhalb des iFrames. Bitte klicken Sie oben in der Leiste auf den "Open in New Tab" (Neuen Tab öffnen) Pfeil, um die App im vollen Fenster zu öffnen.` }]);
-        if (wsRef.current) wsRef.current.close();
-        setIsCalling(false);
-        setIsLiveActive(false);
-        return;
+        setMessages(p => [...p, { role: 'agent', text: `[Info] Mikrofon blockiert. Sie können jedoch per Tastatur chatten und die Stimme des Agenten hören.` }]);
       }
       
       if (stream) {
@@ -89,8 +94,57 @@ export default function VoiceAgentTab({ store }: { store: ReturnType<typeof useS
           if (msg.audio) {
              playAudioChunk(audioCtx, msg.audio);
           }
+          if (msg.transcription) {
+             setMessages(prev => {
+               const cleanedTrans = msg.transcription.trim();
+               if (!cleanedTrans) return prev;
+               if (prev.length > 0 && prev[prev.length - 1].role === 'agent') {
+                  const updated = [...prev];
+                  const lastMsg = updated[updated.length - 1];
+                  if (lastMsg.text.startsWith("Live Voice verbunden") || lastMsg.text.startsWith("[Info]")) {
+                     return [...prev, { role: 'agent', text: cleanedTrans }];
+                  } else {
+                     lastMsg.text = (lastMsg.text + " " + cleanedTrans).trim();
+                     return updated;
+                  }
+               } else {
+                  return [...prev, { role: 'agent', text: cleanedTrans }];
+               }
+             });
+          }
           if (msg.interrupted) {
              nextStartTimeRef.current = 0;
+          }
+
+          // Handle real salon store modifications triggered by the AI Live Agent
+          if (msg.type === "add_appointment") {
+             const app = msg.appointment;
+             store.addAppointment({
+               type: 'appointment',
+               source: 'voice-agent',
+               customerName: app.customerName,
+               phone: app.phone,
+               service: app.service,
+               date: app.date,
+               startTime: app.startTime,
+               staff: 'Beliebig',
+               status: 'geplant',
+               notes: app.notes || ''
+             } as any);
+
+             setMessages(p => [...p, { role: 'agent', text: `[System] ✅ Termin erfolgreich gebucht für ${app.customerName} (${app.service}) am ${app.date} um ${app.startTime}.` }]);
+          }
+
+          if (msg.type === "update_appointment") {
+             const { id, updates } = msg;
+             store.updateAppointmentStyle(id, updates);
+             setMessages(p => [...p, { role: 'agent', text: `[System] 🔄 Termin wurde verschoben auf den ${updates.date} um ${updates.startTime}.` }]);
+          }
+
+          if (msg.type === "cancel_appointment") {
+             const { id } = msg;
+             store.updateAppointmentStyle(id, { status: 'abgesagt' });
+             setMessages(p => [...p, { role: 'agent', text: `[System] ❌ Termin erfolgreich abgesagt.` }]);
           }
         } catch (e) {
           console.error("Live JS error", e);
@@ -99,6 +153,10 @@ export default function VoiceAgentTab({ store }: { store: ReturnType<typeof useS
 
       ws.onopen = () => {
         setMessages([{ role: 'agent', text: 'Live Voice verbunden. Sprechen Sie jetzt!' }]);
+        ws.send(JSON.stringify({
+          type: "sync_appointments",
+          appointments: store.appointments
+        }));
       };
       
       ws.onclose = () => {
@@ -157,7 +215,7 @@ export default function VoiceAgentTab({ store }: { store: ReturnType<typeof useS
           try {
           if (isLiveActive && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
               wsRef.current.send(JSON.stringify({ text: userText }));
-              setMessages(p => [...p, { role: 'agent', text: `[Live Text gesendet]` }]);
+              setIsProcessing(false);
           } else {
              // Fallback text api
              const res = await fetch('/api/chat', {
@@ -192,7 +250,11 @@ export default function VoiceAgentTab({ store }: { store: ReturnType<typeof useS
                  {isCalling && <div className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse"></div>}
                  Voice Agent Intercom
               </h2>
-              <p className="text-gray-400 text-sm mt-1">{isCalling ? 'Verbunden • Demo Kanal' : 'Bereit für Anruf'}</p>
+              <p className="text-gray-400 text-sm mt-1">
+                {isCalling 
+                  ? (config.demoMode ? 'Verbunden • Offline Demo-Modus' : 'Verbunden • Live KI-Modus') 
+                  : 'Bereit für Anruf'}
+              </p>
           </div>
           <div className="flex gap-3">
               {!isCalling ? (
@@ -205,6 +267,24 @@ export default function VoiceAgentTab({ store }: { store: ReturnType<typeof useS
                   </button>
               )}
           </div>
+      </div>
+
+      {/* Warning Banner for Iframe Permissions */}
+      <div className="bg-amber-50 border-b border-amber-200 p-4 text-amber-800 text-sm flex flex-col md:flex-row md:items-center justify-between gap-3 flex-shrink-0">
+          <div className="flex items-center gap-2">
+             <Mic className="text-amber-600 flex-shrink-0" size={18} />
+             <span>
+               <strong>Mikrofon-Hinweis:</strong> Browser blockieren den Mikrofon-Zugriff oft in geschlossenen iFrame-Vorschauen. Für ein voll funktionsfähiges Gespräch klicken Sie bitte rechts auf <strong>Im neuen Tab öffnen</strong>.
+             </span>
+          </div>
+          <a 
+             href={window.location.href} 
+             target="_blank" 
+             rel="noopener noreferrer" 
+             className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-amber-600 text-white rounded-full text-xs font-semibold hover:bg-amber-700 transition-colors shadow-sm ml-auto md:ml-0 flex-shrink-0"
+          >
+             <ExternalLink size={14} /> Im neuen Tab öffnen
+          </a>
       </div>
 
       {/* Chat Area */}
