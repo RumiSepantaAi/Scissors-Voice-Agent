@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useSalonStore } from './store';
 import { LayoutDashboard, Mic, Calendar as CalendarIcon, List as ListIcon, Settings as SettingsIcon, Code } from 'lucide-react';
 import DashboardTab from './components/DashboardTab';
@@ -11,6 +11,10 @@ import DebugTab from './components/DebugTab';
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const store = useSalonStore();
+
+  useEffect(() => {
+    document.title = store.config.name || 'Scissors';
+  }, [store.config.name]);
 
   const renderTab = () => {
     switch (activeTab) {
